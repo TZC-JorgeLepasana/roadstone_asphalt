@@ -34,6 +34,7 @@ class ParsingProgressConsumer(AsyncWebsocketConsumer):
             'progress': event['progress']
         }))
 
+
 class EnergyConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.task_id = self.scope['url_route']['kwargs']['task_id']
