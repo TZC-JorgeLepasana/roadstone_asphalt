@@ -28,7 +28,7 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'unsafe-secret-key-for-dev')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 
-DEBUG = os.getenv('DEBUG', 'False') == 'True'
+DEBUG = os.getenv('DEBUG', True)
 
 
 # For development only (disable in production)
@@ -186,9 +186,9 @@ STATIC_URL = '/static/'
 
 # Directories where Django will look for static files during development
 
-STATIC_ROOT = BASE_DIR / 'staticfiles' 
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-STATICFILES_DIRS = [BASE_DIR / "static"] 
+STATICFILES_DIRS = [BASE_DIR / "static"]
 
 # Directory where Django will collect static files for production
 
