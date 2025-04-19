@@ -2,6 +2,7 @@ import os
 import gc
 import pytz
 import requests
+import re
 import logging
 from io import BytesIO
 import time
@@ -279,13 +280,72 @@ def parse_duration(time_str):
     except:
         return 0
 
+def correct_invalid_time_format(time_str):
+    """Fix various invalid datetime formats with intelligent pattern matching"""
+    try:
+        # Handle multiple invalid formats including:
+        # - 2023-07-05T15:08:15:522Z
+        # - 2023-07-05T15:08:15:522+00:00
+        # - 2023-07-05T15:08:15:522
+        corrected = re.sub(
+            r'(?<=:\d{2}):(\d{1,6})(?=[Z+-]|$)',
+            r'.\1',
+            time_str,
+            count=1  # Only replace first occurrence after seconds
+        )
+
+        # Second pass for non-standard timezones
+        corrected = re.sub(
+            r'([+-])(\d{2}):(\d{2})$',
+            r'\1\2\3',
+            corrected
+        )
+
+        return corrected
+    except Exception as e:
+        logger.error(f"Time format correction failed for {time_str}: {str(e)}")
+        return time_str
+        
 def process_batch(batch, filename):
-    """Process individual batch with comprehensive field extraction and validation"""
+    """Process individual batch with robust time handling"""
     try:
         with transaction.atomic():
+            # Extract time with fallbacks
+            time_str = (
+                batch.findtext("Time") 
+                or batch.findtext("Timestamp")
+                or batch.findtext("DateTime")
+            ).strip()
+
+            if not time_str:
+                logger.error(f"Missing time in batch from {filename}")
+                return False
+
+            # Apply corrections and parsing
+            corrected_time = correct_invalid_time_format(time_str)
+
+            try:
+                parsed_time = parser.parse(corrected_time)
+
+                # Handle timezone explicitly
+                if not parsed_time.tzinfo:
+                    if 'Z' in corrected_time.upper():
+                        parsed_time = parsed_time.replace(tzinfo=pytz.UTC)
+                    else:
+                        parsed_time = parsed_time.astimezone(pytz.UTC)
+            except Exception as e:
+                logger.error(
+                    f"Datetime parse failed\n"
+                    f"Original: {time_str}\n"
+                    f"Corrected: {corrected_time}\n"
+                    f"Error: {str(e)}"
+                )
+                return False
+
+            # Build batch data with validation
             batch_data = {
                 'BatchNo': batch.findtext("BatchNo", "").strip(),
-                'Time': batch.findtext("Time") or batch.findtext("Timestamp", "").strip(),
+                'Time': parsed_time,
                 'JobNo': batch.findtext("JobNo", "").strip(),
                 'RecipeNo': batch.findtext("RecipeNo", "").strip(),
                 'RecipeName': batch.findtext("RecipeName", "").strip(),
@@ -306,16 +366,21 @@ def process_batch(batch, filename):
                 batch_data[f'HotBin{i}_Target'] = safe_decimal(hot_bin.findtext("Target", ""))
             
             # Validate required fields
-            if not all([batch_data['BatchNo'], batch_data['Time'], batch_data['JobNo']]):
-                raise ValueError("Missing required batch fields")
+            required_fields = ['BatchNo', 'Time', 'JobNo']
+            if not all(batch_data[field] for field in required_fields):
+                missing = [field for field in required_fields if not batch_data[field]]
+                raise ValueError(f"Missing required fields: {', '.join(missing)}")
             
-            # Check for duplicates
+            # Check for duplicates using database constraints
             if BatchLog.objects.filter(
                 BatchNo=batch_data['BatchNo'],
-                Time=batch_data['Time'],
+                Time__range=(
+                    parsed_time - timedelta(seconds=1),
+                    parsed_time + timedelta(seconds=1)
+                ),
                 JobNo=batch_data['JobNo']
             ).exists():
-                logger.warning(f"Duplicate batch detected: {batch_data['BatchNo']}")
+                logger.info(f"Skipping duplicate batch {batch_data['BatchNo']}")
                 return False
             
             # Create batch record
